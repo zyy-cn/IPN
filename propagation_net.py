@@ -111,7 +111,7 @@ class Refine(nn.Module):
 
     def forward(self, f, pm):
         s = self.ResFS(f)
-        m = s + F.upsample(pm, scale_factor=self.scale_factor, mode='bilinear')
+        m = s + nn.functional.interpolate(pm, scale_factor=self.scale_factor, mode='bilinear', align_corners=True)
         m = self.ResMM(m)
         return m
 
