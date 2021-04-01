@@ -8,7 +8,7 @@ import numpy as np
 import copy
 
 # my libs
-from utils import ToCudaPN, Dilate_mask, load_UnDP, Get_weight
+from utils_ipn import ToCudaPN, Dilate_mask, load_UnDP, Get_weight
 from interaction_net import Inet
 from propagation_net import Pnet
 

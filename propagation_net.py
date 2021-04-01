@@ -22,7 +22,7 @@ import argparse
 import copy
 import sys
 
-from utils import ToCudaVariable, load_UnDP
+from utils_ipn import ToCudaVariable, load_UnDP
 
 print('Propagation Network: initialized')
 # 
