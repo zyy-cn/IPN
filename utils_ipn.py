@@ -1,22 +1,12 @@
 from __future__ import division
 import torch
 from torch.autograd import Variable
-from torch.utils import data
-
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.nn.init as init
-import torch.utils.model_zoo as model_zoo
-from torchvision import models
 
 # general libs
-import matplotlib.pyplot as plt
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import numpy as np
 import os
-import copy
 import cv2
-import random
 import glob
 
 

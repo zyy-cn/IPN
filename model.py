@@ -15,7 +15,6 @@ from propagation_net import Pnet
 # davis
 from davisinteractive.utils.scribbles import scribbles2mask
 
-
 class model():
     def __init__(self, load_pretrain=True):
         self.model_I = Inet()
@@ -150,6 +149,12 @@ class model():
 
         loss /= num_objects
 
+        # all_E = torch.zeros(1, num_objects+1, num_frames, height, width)
+        # all_E[0, 0] = 1 - masks.max(dim=0)[0]
+        # all_E[0, 1:] = masks
+        # all_E = torch.clamp(all_E, 1e-7, 1 - 1e-7)
+        # all_E = torch.log((all_E / (1 - all_E)))
+
         em = torch.zeros(1, num_objects + 1, num_frames, height, width).to(masks.device)
         em[0, 0, :, :, :] = torch.prod(1 - masks, dim=0)  # bg prob
         em[0, 1:num_objects + 1, :, :] = masks  # obj prob
@@ -164,4 +169,3 @@ class model():
         variables['mask_objs'] = masks
         variables['probs'] = all_E
         variables['loss'] = loss
-
