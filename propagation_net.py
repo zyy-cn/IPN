@@ -261,9 +261,10 @@ class Pnet(nn.Module):
         return ToCudaVariable([torch.from_numpy(np_yxhw.copy()).float()])[0]
 
 
-    def forward(self, c_ref, p_ref, tf, tm, tx, gm, loss_weight):  # b,c,h,w // b,4 (y,x,h,w)
+    def forward(self, c_ref, p_ref, tf, tm, tx, gm, loss_weight, a_ref=None):  # b,c,h,w // b,4 (y,x,h,w)
         # if first target frame (no tb)
-        if tm is None:
+        # if tm is None:
+        if torch.all(tm == -1):
             tm = ToCudaVariable([0.5*torch.ones(gm.size())], requires_grad=False)[0]
         tb = self.masks2yxhw(tm, tx, scale=1.5)
 
@@ -271,37 +272,42 @@ class Pnet(nn.Module):
         fw_grid, bw_grid, theta = self.get_ROI_grid(tb, src_size=(oh, ow), dst_size=(256,256), scale=1.0)
 
         #  Sample target frame
-        tf_roi = F.grid_sample(tf, fw_grid)
-        tm_roi = F.grid_sample(torch.unsqueeze(tm, dim=1).float(), fw_grid)[:,0]
-        tx_roi = F.grid_sample(torch.unsqueeze(tx, dim=1).float(), fw_grid)[:,0]
+        tf_roi = F.grid_sample(tf, fw_grid, align_corners=True)
+        tm_roi = F.grid_sample(torch.unsqueeze(tm, dim=1).float(), fw_grid, align_corners=True)[:,0]
+        tx_roi = F.grid_sample(torch.unsqueeze(tx, dim=1).float(), fw_grid, align_corners=True)[:,0]
 
         # run Siamese Encoder
         tr5, tr4, tr3, tr2 = self.Encoder(tf_roi, tm_roi, tx_roi)
-        if p_ref is None:
-            a_ref = c_ref.detach()
-        else:
-            a_ref = self.SEFA(c_ref.detach(), p_ref.detach())
+        if a_ref is None:
+            if p_ref is None:
+                # a_ref = c_ref.detach()
+                a_ref = c_ref
+            else:
+                # a_ref = self.SEFA(c_ref.detach(), p_ref.detach())
+                a_ref = self.SEFA(c_ref, p_ref)
         em_roi = self.Decoder(a_ref, tr5, tr4, tr3, tr2)
 
         ## Losses are computed within ROI
         # CE loss
-        gm_roi = F.grid_sample(torch.unsqueeze(gm, dim=1).float(), fw_grid)[:,0]
+        gm_roi = F.grid_sample(torch.unsqueeze(gm, dim=1).float(), fw_grid, align_corners=True)[:,0]
         gm_roi = gm_roi.detach()
         # CE loss
-        CE = nn.CrossEntropyLoss(reduce=False)
-        batch_CE = ToCudaVariable([torch.zeros(gm_roi.size()[0])])[0] # batch sized loss container 
-        sizes=[(256,256), (64,64), (32,32), (16,16), (8,8)]
+        # CE = nn.CrossEntropyLoss(reduce=False)
+        CE = nn.CrossEntropyLoss(reduction='none')
+        batch_CE = ToCudaVariable([torch.zeros(gm_roi.size()[0])])[0] # batch sized loss container
+        sizes = [(256,256), (64,64), (32,32), (16,16), (8,8)]
         for s in range(5):
             if s == 0:
                 CE_s = CE(em_roi[s], torch.round(gm_roi).long()).mean(-1).mean(-1) # mean over h,w
                 batch_CE += loss_weight[s] * CE_s
             else:
                 if loss_weight[s]:
-                    gm_roi_s = torch.round(F.upsample(torch.unsqueeze(gm_roi, dim=1), size=sizes[s], mode='bilinear')[:,0]).long()
+                    # gm_roi_s = torch.round(F.upsample(torch.unsqueeze(gm_roi, dim=1), size=sizes[s], mode='bilinear')[:,0]).long()
+                    gm_roi_s = torch.round(F.interpolate(torch.unsqueeze(gm_roi, dim=1), size=sizes[s], mode='bilinear',
+                                                         align_corners=True)[:,0]).long()
                     CE_s = CE(em_roi[s], gm_roi_s).mean(-1).mean(-1) # mean over h,w
                     batch_CE += loss_weight[s] * CE_s
 
-
         # get final output via inverse warping
-        em = F.grid_sample(F.softmax(em_roi[0], dim=1), bw_grid)[:,1]
+        em = F.grid_sample(F.softmax(em_roi[0], dim=1), bw_grid, align_corners=True)[:,1]
         return em, batch_CE, a_ref

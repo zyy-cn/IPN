@@ -1,40 +1,23 @@
 from __future__ import division
 import torch
-from torch.autograd import Variable
-from torch.utils import data
-
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.nn.init as init
-import torch.utils.model_zoo as model_zoo
-from torchvision import models
 
 # general libs
-import cv2
-import matplotlib.pyplot as plt
-from PIL import Image
 import numpy as np
-import math
-import time
-import os
-import argparse
 import copy
-import random
 
 # my libs
-from utils import ToCudaVariable, ToCudaPN, Dilate_mask, load_UnDP, Get_weight, overlay_davis, overlay_checker, overlay_color, overlay_fade
+from utils import ToCudaPN, Dilate_mask, load_UnDP, Get_weight
 from interaction_net import Inet
 from propagation_net import Pnet
 
 # davis
-from davisinteractive.utils.scribbles import scribbles2mask, annotated_frames
+from davisinteractive.utils.scribbles import scribbles2mask
 
-# palette
-palette = Image.open('00000.png').getpalette()
-palette[3:6] = [0,0,128]
 
 class model():
-    def __init__(self, frames):
+    def __init__(self, load_pretrain=True):
         self.model_I = Inet()
         self.model_P = Pnet()
         if torch.cuda.is_available():
@@ -43,87 +26,142 @@ class model():
             self.model_P = nn.DataParallel(self.model_P)
             self.model_I.cuda()
             self.model_P.cuda()
-            self.model_I.load_state_dict(torch.load('I_e290.pth'))
-            self.model_P.load_state_dict(torch.load('P_e290.pth'))
+            if load_pretrain:
+                self.model_I.load_state_dict(torch.load('I_e290.pth'))
+                self.model_P.load_state_dict(torch.load('P_e290.pth'))
         else:
             print('Using CPU')
-            self.model_I.load_state_dict(load_UnDP('I_e290.pth'))
-            self.model_P.load_state_dict(load_UnDP('P_e290.pth'))
+            if load_pretrain:
+                self.model_P.load_state_dict(load_UnDP('P_e290.pth'))
+                self.model_I.load_state_dict(load_UnDP('I_e290.pth'))
 
         self.model_I.eval() # turn-off BN
         self.model_P.eval() # turn-off BN
 
-        self.frames = frames.copy()
-        self.num_frames, self.height, self.width = self.frames.shape[:3]
 
-        self.init_variables(self.frames)
-        
-    def init_variables(self, frames):
-        self.all_F = torch.unsqueeze(torch.from_numpy(np.transpose(frames, (3, 0, 1, 2))).float() / 255., dim=0) # 1,3,t,h,w
-        self.all_E = torch.zeros(1, self.num_frames, self.height, self.width)  # 1,t,h,w
-        self.prev_E = torch.zeros(1, self.num_frames, self.height, self.width)  # 1,t,h,w
-        self.dummy_M = torch.zeros(1, self.height, self.width).long()
-        # to cuda
-        self.all_F, self.all_E, self.prev_E, self.dummy_M = ToCudaVariable([self.all_F, self.all_E, self.prev_E, self.dummy_M], volatile=True)
-        
-        self.ref = None
-        self.a_ref = None
-        self.next_a_ref = None
-        self.prev_targets = []
+    def init_variables(self, frames, masks, device='cuda'):
+        num_frames, height, width = frames.shape[:3]
+        if type(frames) is np.ndarray:
+            frames = torch.Tensor(frames)
+        if type(masks) is np.ndarray:
+            masks = torch.Tensor(masks)
+        num_objs = len(torch.unique(masks)) - 1
+        all_F = torch.unsqueeze(frames.permute((3, 0, 1, 2)).float() / 255., dim=0).to(device) # 1,3,t,h,w
+        all_M = torch.unsqueeze(masks.float(), dim=0).long().to(device) # 1,t,h,w
+        prev_targets = []
+        variables = {}
+        variables['all_F'] = all_F
+        variables['all_M'] = all_M
+        variables['mask_objs'] = -1 * torch.ones(num_objs, num_frames, height, width).to(device)  # o,t,h,w
+        variables['prev_targets'] = prev_targets
+        variables['probs'] = None
+        variables['info'] = {}
+        variables['info']['num_frames'] = num_frames
+        variables['info']['num_objs'] = num_objs
+        variables['info']['height'] = height
+        variables['info']['width'] = width
+        variables['info']['device'] = device
+        variables['ref'] = [None for _ in range(num_objs)]
 
+        return variables
 
-    def Prop_forward(self, target, end):
-        for n in range(target+1, end+1):  #[1,2,...,N-1]
-            print('[MODEL: propagation network] >>>>>>>>> {} to {}'.format(n-1, n))
-            self.all_E[:,n], _, self.next_a_ref = self.model_P(self.ref, self.a_ref, self.all_F[:,:,n], self.prev_E[:,n], torch.round(self.all_E[:,n-1]), self.dummy_M, [1,0,0,0,0])
-
-    def Prop_backward(self, target, end):
-        for n in reversed(range(end, target)): #[N-2,N-3,...,0]
-            print('[MODEL: propagation network] {} to {} <<<<<<<<<'.format(n+1, n))
-            self.all_E[:,n], _, self.next_a_ref = self.model_P(self.ref, self.a_ref, self.all_F[:,:,n], self.prev_E[:,n], torch.round(self.all_E[:,n+1]), self.dummy_M, [1,0,0,0,0])
-
-
-    def Run_propagation(self, target, mode='linear', at_least=-1, std=None):
-        # when new round begins
-        self.a_ref = self.next_a_ref
-        self.prev_E = self.all_E  
-
-        if mode == 'naive':
-            left_end, right_end, weight = 0, self.num_frames-1, num_frames*[1.0]
-        elif mode == 'linear':
-            left_end, right_end, weight = Get_weight(target, self.prev_targets, self.num_frames, at_least=at_least)
-        else:
-            raise NotImplementedError
-
-        self.Prop_forward(target, right_end)
-        self.Prop_backward(target, left_end)
-
-        for f in range(self.num_frames):
-            self.all_E[:,:,f] = weight[f] * self.all_E[:,:,f] + (1-weight[f]) * self.prev_E[:,:,f]
-
-        self.prev_targets.append(target)
-        print('[MODEL] Propagation finished.')    
-
-    def Run_interaction(self, scribbles):
-        
-        # convert davis scribbles to torch
+    def Run(self, variables, optimizer=None):
+        all_F = variables['all_F']
+        num_objects = variables['info']['num_objs']
+        num_frames = variables['info']['num_frames']
+        height = variables['info']['height']
+        width = variables['info']['width']
+        prev_targets = variables['prev_targets']
+        scribbles = variables['scribbles']
         target = scribbles['annotated_frame']
-        scribble_mask = scribbles2mask(scribbles, (self.height, self.width))[target]
-        scribble_mask = Dilate_mask(scribble_mask, 1)
-        self.tar_P, self.tar_N = ToCudaPN(scribble_mask)
 
-        self.all_E[:,target], _, self.ref = self.model_I(self.all_F[:,:,target], self.all_E[:,target], self.tar_P, self.tar_N, self.dummy_M, [1,0,0,0,0]) # [batch, 256,512,2]
+        loss = 0
+        masks = torch.zeros(num_objects, num_frames, height, width)
+        for n_obj in range(1, num_objects+1):
 
-        print('[MODEL: interaction network] User Interaction on {}'.format(target))    
+            if optimizer is not None:
+                self.model_I.zero_grad()
+                self.model_P.zero_grad()
 
-    def Get_mask(self):
-        return torch.round(self.all_E[0]).data.cpu().numpy().astype(np.uint8) 
+            # variables for current obj
+            all_E_n = variables['mask_objs'][n_obj-1:n_obj].data if variables['mask_objs'][n_obj-1:n_obj] is not None \
+                else variables['mask_objs'][n_obj-1:n_obj]
+            a_ref = variables['ref'][n_obj-1]
+            prev_E_n = all_E_n.clone()
+            all_M_n = (variables['all_M'] == n_obj).long()
 
-    def Get_mask_range(self, start, end):
-        pred_masks = torch.round(self.all_E[0, start:end]).data.cpu().numpy().astype(np.uint8) # t,h,w
-        return torch.round(self.all_E[0, start:end]).data.cpu().numpy().astype(np.uint8)
+            # divide scribbles for current object
+            n_scribble = copy.deepcopy(scribbles)
+            n_scribble['scribbles'][target] = []
+            for p in scribbles['scribbles'][target]:
+                if p['object_id'] == n_obj:
+                    n_scribble['scribbles'][target].append(copy.deepcopy(p))
+                    n_scribble['scribbles'][target][-1]['object_id'] = 1
+                else:
+                    if p['object_id'] == 0:
+                        n_scribble['scribbles'][target].append(copy.deepcopy(p))
 
-    def Get_mask_index(self, index):
-        return torch.round(self.all_E[0, index]).data.cpu().numpy().astype(np.uint8)
+            scribble_mask = scribbles2mask(n_scribble, (height, width))[target]
+            scribble_mask_N = (prev_E_n[0, target].cpu() > 0.5) & (torch.tensor(scribble_mask) == 0)
+            scribble_mask[scribble_mask == 0] = -1
+            scribble_mask[scribble_mask_N] = 0
+            scribble_mask = Dilate_mask(scribble_mask, 1)
 
+            # interaction
+            tar_P, tar_N = ToCudaPN(scribble_mask)
+            all_E_n[:, target], batch_CE, ref = self.model_I(all_F[:, :, target], all_E_n[:, target],
+                                                             # tar_P, tar_N, all_M_n[:, target], [1, 0, 0, 0, 0])  # [batch, 256,512,2]
+                                                             tar_P, tar_N, all_M_n[:, target], [1, 1, 1, 1, 1])  # [batch, 256,512,2]
+            loss += batch_CE
+
+            # propagation
+            left_end, right_end, weight = Get_weight(target, prev_targets, num_frames, at_least=-1)
+
+            # Prop_forward
+            next_a_ref = None
+            for n in range(target+1, right_end+1):  #[1,2,...,N-1]
+                all_E_n[:,n], batch_CE, next_a_ref = self.model_P(ref, a_ref, all_F[:,:,n], prev_E_n[:,n],
+                                                                  # all_E_n[:,n-1], all_M_n[:, n], [1,0,0,0,0])
+                                                                  all_E_n[:,n-1], all_M_n[:, n], [1,1,1,1,1], next_a_ref)
+                loss += batch_CE
+
+            # Prop_backward
+            for n in reversed(range(left_end, target)):
+                all_E_n[:,n], batch_CE, next_a_ref = self.model_P(ref, a_ref, all_F[:,:,n], prev_E_n[:,n],
+                                                                  all_E_n[:,n+1], all_M_n[:, n], [1,1,1,1,1], next_a_ref)
+                loss += batch_CE
+
+            for f in range(num_frames):
+                # all_E_n[:, :, f] = weight[f] * all_E_n[:, :, f] + (1 - weight[f]) * prev_E_n[:, :, f]
+                all_E_n[:, f, :, :] = weight[f] * all_E_n[:, f, :, :] + (1 - weight[f]) * prev_E_n[:, f, :, :]
+
+            masks[n_obj - 1] = all_E_n[0]
+            variables['ref'][n_obj - 1] = next_a_ref
+
+
+            # Backward
+            if optimizer is not None:
+                loss.backward(retain_graph=True)
+                for param in list(self.model_I.parameters()) + list(self.model_P.parameters()):
+                    if hasattr(param.grad, 'data'):
+                        param.grad.data.clamp_(-1, 1)
+                optimizer.step()
+
+
+        loss /= num_objects
+
+        em = torch.zeros(1, num_objects + 1, num_frames, height, width).to(masks.device)
+        em[0, 0, :, :, :] = torch.prod(1 - masks, dim=0)  # bg prob
+        em[0, 1:num_objects + 1, :, :] = masks  # obj prob
+        em = torch.clamp(em, 1e-7, 1 - 1e-7)
+        all_E = torch.log((em / (1 - em)))
+
+        all_E = F.softmax(all_E, dim=1)
+        final_masks = all_E[0].max(0)[1].float()
+
+        variables['prev_targets'].append(target)
+        variables['masks'] = final_masks
+        variables['mask_objs'] = masks
+        variables['probs'] = all_E
+        variables['loss'] = loss
 

@@ -21,18 +21,18 @@ import glob
 
 
 
-def ToCudaVariable(xs, volatile=False, requires_grad=False):
+def ToCudaVariable(xs, requires_grad=False):
     if torch.cuda.is_available():
-        return [Variable(x.cuda(), volatile=volatile, requires_grad=requires_grad) for x in xs]
+        return [Variable(x.cuda(), requires_grad=requires_grad) for x in xs]
     else:
-        return [Variable(x, volatile=volatile, requires_grad=requires_grad) for x in xs]
+        return [Variable(x, requires_grad=requires_grad) for x in xs]
 
 def ToCudaPN(mask):
     P = (mask == 1).astype(np.float32)
     N = (mask == 0).astype(np.float32)
     P = torch.unsqueeze(torch.from_numpy(P), dim=0).float()
     N = torch.unsqueeze(torch.from_numpy(N), dim=0).float()
-    return ToCudaVariable([P, N], volatile=True)
+    return ToCudaVariable([P, N])
 
 def Dilate_mask(mask, num_objects):
     # assume sparse indexed mask (ignore = -1)
