@@ -1,27 +1,16 @@
 from __future__ import division
 import torch
 from torch.autograd import Variable
-from torch.utils import data
 
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.nn.init as init
-import torch.utils.model_zoo as model_zoo
 from torchvision import models
 
 # general libs
-import cv2
-import matplotlib.pyplot as plt
-from PIL import Image
 import numpy as np
 import math
-import time
-import os
-import argparse
-import copy
-import sys
 
-from utils_ipn import ToCudaVariable, load_UnDP
+from utils_ipn import ToCudaVariable
 
 print('Interaction Network: initialized')
 
@@ -112,7 +101,6 @@ class Refine(nn.Module):
     def forward(self, f, pm):
         s = self.ResFS(f)
         m = s + nn.functional.interpolate(pm, scale_factor=self.scale_factor, mode='bilinear', align_corners=True)
-        # m = s + F.upsample(pm, scale_factor=self.scale_factor, mode='bilinear', align_corners=True)
         m = self.ResMM(m)
         return m
 
@@ -275,7 +263,6 @@ class Inet(nn.Module):
         gm_roi = F.grid_sample(torch.unsqueeze(gm, dim=1).float(), fw_grid, align_corners=True)[:, 0]
         gm_roi = gm_roi.detach()
         # CE loss
-        # CE = nn.CrossEntropyLoss(reduce=False)
         CE = nn.CrossEntropyLoss(reduction='none')
         batch_CE = ToCudaVariable([torch.zeros(gm_roi.size()[0])])[0]  # batch sized loss container
         sizes = [(256, 256), (64, 64), (32, 32), (16, 16), (8, 8)]
@@ -285,7 +272,6 @@ class Inet(nn.Module):
                 batch_CE += loss_weight[s] * CE_s
             else:
                 if loss_weight[s]:
-                    # gm_roi_s = torch.round(F.upsample(torch.unsqueeze(gm_roi, dim=1), size=sizes[s], mode='bilinear')[:,0]).long()
                     gm_roi_s = torch.round(F.interpolate(torch.unsqueeze(gm_roi, dim=1), size=sizes[s], mode='bilinear',
                                                          align_corners=True)[:, 0]).long()
                     CE_s = CE(em_roi[s], gm_roi_s).mean(-1).mean(-1)  # mean over h,w
@@ -295,5 +281,4 @@ class Inet(nn.Module):
 
         # get final output via inverse warping
         em = F.grid_sample(F.softmax(em_roi[0], dim=1), bw_grid, align_corners=True)[:, 1]
-        # return em, batch_CE, [tr5, tr4, tr3, tr2]
         return em, batch_CE, tr5

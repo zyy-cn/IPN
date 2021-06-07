@@ -1,0 +1,11 @@
+seed: 2019
+num_epochs: 500
+eval_interval: 10
+
+lr_pow: 0.9
+lr: 0.00001
+weight_decay: 0.0005
+
+dataset:
+  num_workers: 2
+  root_dir_davis: data/DAVIS

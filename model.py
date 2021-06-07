@@ -34,8 +34,24 @@ class model():
                 self.model_P.load_state_dict(load_UnDP('P_e290.pth'))
                 self.model_I.load_state_dict(load_UnDP('I_e290.pth'))
 
-        self.model_I.eval() # turn-off BN
-        self.model_P.eval() # turn-off BN
+        self.eval()
+
+    def train(self):
+        self.model_I.train()
+        self.model_P.train()
+
+        for m in self.model_I.modules():
+            if isinstance(m, torch.nn.BatchNorm2d):
+                m.track_running_stats = True
+                m.eval()
+        for m in self.model_P.modules():
+            if isinstance(m, torch.nn.BatchNorm2d):
+                m.track_running_stats = True
+                m.eval()
+
+    def eval(self):
+        self.model_I.eval()
+        self.model_P.eval()
 
 
     def init_variables(self, frames, masks, device='cuda'):
@@ -64,7 +80,7 @@ class model():
 
         return variables
 
-    def Run(self, variables, optimizer=None):
+    def Run(self, variables):
         all_F = variables['all_F']
         num_objects = variables['info']['num_objs']
         num_frames = variables['info']['num_frames']
@@ -77,10 +93,6 @@ class model():
         loss = 0
         masks = torch.zeros(num_objects, num_frames, height, width)
         for n_obj in range(1, num_objects+1):
-
-            if optimizer is not None:
-                self.model_I.zero_grad()
-                self.model_P.zero_grad()
 
             # variables for current obj
             all_E_n = variables['mask_objs'][n_obj-1:n_obj].data if variables['mask_objs'][n_obj-1:n_obj] is not None \
@@ -109,7 +121,6 @@ class model():
             # interaction
             tar_P, tar_N = ToCudaPN(scribble_mask)
             all_E_n[:, target], batch_CE, ref = self.model_I(all_F[:, :, target], all_E_n[:, target],
-                                                             # tar_P, tar_N, all_M_n[:, target], [1, 0, 0, 0, 0])  # [batch, 256,512,2]
                                                              tar_P, tar_N, all_M_n[:, target], [1, 1, 1, 1, 1])  # [batch, 256,512,2]
             loss += batch_CE
 
@@ -120,40 +131,23 @@ class model():
             next_a_ref = None
             for n in range(target+1, right_end+1):  #[1,2,...,N-1]
                 all_E_n[:,n], batch_CE, next_a_ref = self.model_P(ref, a_ref, all_F[:,:,n], prev_E_n[:,n],
-                                                                  # all_E_n[:,n-1], all_M_n[:, n], [1,0,0,0,0])
-                                                                  all_E_n[:,n-1], all_M_n[:, n], [1,1,1,1,1], next_a_ref)
+                                                                  all_E_n[:,n-1], all_M_n[:, n], [1, 1, 1, 1, 1], next_a_ref)
                 loss += batch_CE
 
             # Prop_backward
             for n in reversed(range(left_end, target)):
                 all_E_n[:,n], batch_CE, next_a_ref = self.model_P(ref, a_ref, all_F[:,:,n], prev_E_n[:,n],
-                                                                  all_E_n[:,n+1], all_M_n[:, n], [1,1,1,1,1], next_a_ref)
+                                                                  all_E_n[:,n+1], all_M_n[:, n], [1, 1, 1, 1, 1], next_a_ref)
                 loss += batch_CE
 
             for f in range(num_frames):
-                # all_E_n[:, :, f] = weight[f] * all_E_n[:, :, f] + (1 - weight[f]) * prev_E_n[:, :, f]
                 all_E_n[:, f, :, :] = weight[f] * all_E_n[:, f, :, :] + (1 - weight[f]) * prev_E_n[:, f, :, :]
 
             masks[n_obj - 1] = all_E_n[0]
             variables['ref'][n_obj - 1] = next_a_ref
 
-
-            # Backward
-            if optimizer is not None:
-                loss.backward(retain_graph=True)
-                for param in list(self.model_I.parameters()) + list(self.model_P.parameters()):
-                    if hasattr(param.grad, 'data'):
-                        param.grad.data.clamp_(-1, 1)
-                optimizer.step()
-
-
         loss /= num_objects
 
-        # all_E = torch.zeros(1, num_objects+1, num_frames, height, width)
-        # all_E[0, 0] = 1 - masks.max(dim=0)[0]
-        # all_E[0, 1:] = masks
-        # all_E = torch.clamp(all_E, 1e-7, 1 - 1e-7)
-        # all_E = torch.log((all_E / (1 - all_E)))
 
         em = torch.zeros(1, num_objects + 1, num_frames, height, width).to(masks.device)
         em[0, 0, :, :, :] = torch.prod(1 - masks, dim=0)  # bg prob
