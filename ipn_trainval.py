@@ -51,7 +51,7 @@ def worker_init_fn(worker_id):
 
 
 @ex.capture
-def train(cfg, model, optimizer, scheduler, history, epoch, device, _log):
+def train(cfg, model, optimizer, scheduler, epoch, device, _log):
     losses = AverageMeter()
 
     # prepare data
@@ -127,11 +127,10 @@ def train(cfg, model, optimizer, scheduler, history, epoch, device, _log):
     if scheduler is not None:
         scheduler.step(epoch)
 
-    history['train']['loss'].append(losses.avg)
 
 
 @ex.capture
-def eval_17(cfg, model, device, max_nb_interactions, scribble_list, history, epoch=0, seq=None,
+def eval_17(cfg, model, device, max_nb_interactions, scribble_list, epoch=0, seq=None,
             metric_type='J_AND_F', _log=None):
     nb_objects = AverageMeter()
     davis = Davis(davis_root=cfg.dataset.root_dir_davis)
@@ -201,9 +200,6 @@ def eval_17(cfg, model, device, max_nb_interactions, scribble_list, history, epo
               f"curve:\t{[f'{metric_i*100:.2f}' for metric_i in global_metric_list]}\t"
               f"auc: {global_auc * 100:.2f}")
 
-    history['val']['auc'].append(global_auc)
-
-
 @ex.automain
 def main(_run, _log):
     cfg = edict(_run.config)
@@ -216,7 +212,8 @@ def main(_run, _log):
 
     model = ivs_model(load_pretrain=False)
 
-    ckpt_dir = os.path.join('experiments', str(_run._id)) if _run._id else os.path.join('experiments', 'public')
+    ckpt_dir = os.path.join('results')
+    os.makedirs(ckpt_dir, exist_ok=True)
 
     # Set up optimizers
     params_dict = [dict(params=list(model.model_I.parameters()) + list(model.model_P.parameters()))]
@@ -225,20 +222,15 @@ def main(_run, _log):
 
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[300, 400], gamma=0.1, last_epoch=-1)
 
-    history = {'train': {'loss': [], 'iou': []},
-               'val': {'auc': [], 'best_auc': 0}}
-
     for epoch in range(1, cfg.num_epochs+1):
 
         _log.info(f"Epoch: {epoch}, current learning rate: {scheduler.get_lr()[0]}")
 
-        train(cfg, model, optimizer, scheduler, history, epoch, device)
+        train(cfg, model, optimizer, scheduler, epoch, device)
 
         if epoch % cfg.eval_interval == 0:
             with torch.no_grad():
-                eval_17(cfg, model, device=device, max_nb_interactions=8, scribble_list=[1], history=history, epoch=epoch,
-                        seq=None)
+                eval_17(cfg, model, device=device, max_nb_interactions=8, scribble_list=[1], epoch=epoch, seq=None)
 
-                save_IPN_checkpoint(model.model_I, model.model_P, epoch, ckpt_dir, is_best=False)
-                pickle.dump(history, open(os.path.join(ckpt_dir, 'history.pkl'), 'wb'))
+                save_IPN_checkpoint(model.model_I, model.model_P, ckpt_dir, epoch)
 

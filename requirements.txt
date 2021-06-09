@@ -7,5 +7,5 @@ pyyaml
 sacred
 easydict
 opencv-python
-davisinteractive
+davisinteractive=1.0.4
 imgaug
