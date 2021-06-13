@@ -26,7 +26,7 @@ pip install -r requirements.txt
 ```bash
 python ipn_trainval.py
 ```
-trained models will be stored in `root/results`
+trained models will be stored in `root/weights`. You can download the trained models [here](https://drive.google.com/drive/folders/1823tN79Z3A9vZv3NP7msD3HZyc2ixh_C?usp=sharing).  
 
 ## Evaluation
 The evaluation code can be found [here](https://github.com/svip-lab/IVOS-W).

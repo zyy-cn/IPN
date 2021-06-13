@@ -212,8 +212,7 @@ def main(_run, _log):
 
     model = ivs_model(load_pretrain=False)
 
-    ckpt_dir = os.path.join('results')
-    os.makedirs(ckpt_dir, exist_ok=True)
+    ckpt_dir = os.path.join('weights')
 
     # Set up optimizers
     params_dict = [dict(params=list(model.model_I.parameters()) + list(model.model_P.parameters()))]
@@ -232,5 +231,4 @@ def main(_run, _log):
             with torch.no_grad():
                 eval_17(cfg, model, device=device, max_nb_interactions=8, scribble_list=[1], epoch=epoch, seq=None)
 
-                save_IPN_checkpoint(model.model_I, model.model_P, ckpt_dir, epoch)
-
+                save_IPN_checkpoint(model.model_I, model.model_P, ckpt_dir)
