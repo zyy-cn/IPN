@@ -1,5 +1,4 @@
 import os
-import pickle
 import random
 import numpy as np
 from sacred import Experiment
@@ -212,7 +211,7 @@ def main(_run, _log):
 
     model = ivs_model(load_pretrain=False)
 
-    ckpt_dir = os.path.join('weights')
+    ckpt_dir = os.path.join(cfg.ckpt_dir)
 
     # Set up optimizers
     params_dict = [dict(params=list(model.model_I.parameters()) + list(model.model_P.parameters()))]
